@@ -1,0 +1,14 @@
+{
+  "name": "Remix: Mahi - Personal AI Companion",
+  "description": "A sweet and sassy anime-inspired personal AI assistant with real-time voice-to-voice interaction.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera",
+    "display-capture"
+  ],
+  "majorCapabilities": [
+    "Real-time Audio",
+    "Visual Analysis",
+    "Automation"
+  ]
+}
