@@ -1,0 +1,59 @@
+{
+  "entities": {
+    "user": {
+      "title": "User Profile",
+      "description": "User preferences and gaming statistics linked to their authenticated UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique user ID matching Auth uid" },
+        "displayName": { "type": "string", "description": "Display name of the user" },
+        "email": { "type": "string", "format": "email", "description": "Verified email address" },
+        "photoURL": { "type": "string", "description": "Profile picture URL" },
+        "theme": { "type": "string", "enum": ["purple", "pink", "emerald", "blue"], "description": "Preferred visual theme" },
+        "ludoPlayed": { "type": "integer", "description": "Number of Ludo matches started" },
+        "ludoWon": { "type": "integer", "description": "Number of Ludo matches won" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last updated timestamp" }
+      },
+      "required": ["uid", "displayName", "email"]
+    },
+    "ludoMatch": {
+      "title": "Ludo Match",
+      "description": "Information about a specific completed Ludo match.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Authenticated user ID" },
+        "playerPos": { "type": "integer", "description": "Final position of the player" },
+        "mahiPos": { "type": "integer", "description": "Final position of Mahi" },
+        "winner": { "type": "string", "enum": ["player", "mahi"], "description": "Winner of the match" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Match timestamp" }
+      },
+      "required": ["userId", "playerPos", "mahiPos", "winner", "createdAt"]
+    },
+    "messageLog": {
+      "title": "Message Log",
+      "description": "Real-time chat transcription log for voice interaction.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "User ID associated with the message" },
+        "userText": { "type": "string", "description": "Transcription of what the user said" },
+        "mahiText": { "type": "string", "description": "Transcription of Mahi's response" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Interaction timestamp" }
+      },
+      "required": ["userId", "userText", "mahiText", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "User account document containing theme preference and global game stats."
+    },
+    "/users/{userId}/matches/{matchId}": {
+      "schema": "ludoMatch",
+      "description": "Subcollection of Ludo game matches completed by this user."
+    },
+    "/users/{userId}/messages/{messageId}": {
+      "schema": "messageLog",
+      "description": "Subcollection of voice transcripts log for reference."
+    }
+  }
+}

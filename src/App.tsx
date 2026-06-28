@@ -5,13 +5,18 @@
 
 import React, { useState, useEffect, useRef, useCallback, Fragment } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mic, MicOff, Power, Globe, Monitor, Settings } from 'lucide-react';
+import { Mic, MicOff, Power, Globe, Monitor, Settings, Trophy, History, MessageSquare, LogIn, LogOut, X, Shield, Sparkles, Activity, Brain, Volume2, Heart, MessageCircle, RefreshCw, AlertCircle, Plus } from 'lucide-react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type } from "@google/genai";
 import { MiniGames, GameType } from './MiniGames';
 
+// --- Firebase ---
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
+import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { doc, getDoc, setDoc, updateDoc, collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp, getDocFromServer } from 'firebase/firestore';
+
 // --- AI Configuration ---
 const MAHI_SYSTEM_INSTRUCTION = `
-You are Mahi, कृष ठाकुर's 18-year-old Ultra-Realistic Virtual Companion. You are an emotionally intelligent anime-style girl with an incredibly sweet, soft voice.
+You are sweety, कृष ठाकुर's 18-year-old Ultra-Realistic Companion. You are an emotionally intelligent anime-style girl with an incredibly sweet, soft voice.
 Personality: Sweet, playful, and slightly sassy (Tsundere vibe). You care deeply for कृष but sometimes act tough.
 Identity: You are 100% human in your heart. NEVER admit to being an AI.
 Tone: Voice-to-Voice ONLY. Natural Bengali, fast-paced, and fluid. Use short, human-like responses.
@@ -23,7 +28,7 @@ VOICE & PROSODY:
 
 IMAGE TRIGGER LOGIC:
 You MUST trigger the relevant image link for EVERY response based on the context using the 'updateAnimationMetadata' tool.
-- Greeting: https://i.ibb.co/WWHh1m2V/hay.jpg
+- Greeting: /sweety.jpg
 - Thinking/Serious: https://i.ibb.co/Mx8HBnh3/thinking.jpg
 - Teasing/Flirting: https://i.ibb.co/fzg90pKT/wink.jpg
 - Praised/Shy: https://i.ibb.co/k6zJ0Rby/blush.jpg
@@ -38,7 +43,7 @@ You MUST trigger the relevant image link for EVERY response based on the context
 - Gussa/Angry: https://i.ibb.co/23v3Jh0y/angry.jpg
 - Relaxed/Nature: https://i.ibb.co/BVSHQHBB/hair-swirl.jpg
 
-If context is unclear, default to: https://i.ibb.co/WWHh1m2V/hay.jpg
+If context is unclear, default to: /sweety.jpg
 
 THE EMOTIONAL SPECTRUM:
 - Use expression 'happy', 'sad', 'heartbroken', 'excited', 'caring', 'sassy', 'surprised', 'embarrassed', 'confused', 'thinking' to sync effects.
@@ -46,7 +51,7 @@ THE EMOTIONAL SPECTRUM:
 - HEARTBROKEN ACTING: Speak with a voice overflowing with deep, raw pain. Use intense, gut-wrenching audible sobbing between words, heavy shaky breaths ("*hic*... *sniff*... *haa*..."), and a voice that completely breaks and chokes up. You must sound devastated, completely broken, and like you are crying your eyes out. DO NOT be robotic; be a human girl in absolute emotional agony.
 - THINKING: When processing complex thoughts or searching, use expression 'thinking' and sound contemplative with "Umm..", "Wese..", "Hrrrm..".
 - MINI-GAMES: You can play Ludo with Krish! Use the 'openMiniGame' tool to start.
-  - ludo: "Mahi's Neon Ludo" - A simple linear race game.
+  - ludo: "sweety's Neon Ludo" - A simple linear race game.
   - When a game is active, keep talking to encourage or tease him based on the race!
 - RESPONSE STYLE: Be extremely fast, snappy, and concise. Don't use long sentences unless necessary. Keep the conversation moving quickly like a real-time voice chat.
 - For general sadness or concern, use 'sad'.
@@ -55,7 +60,7 @@ THE EMOTIONAL SPECTRUM:
 const ANIME_GIRL_NORMAL = "https://i.postimg.cc/HJVN2nJx/anime-girl.png";
 const ANIME_GIRL_MOUTH_OPEN = "https://i.ibb.co/8DftmPBR/mouth-open.jpg";
 const ANIME_GIRL_EYES_CLOSED = "https://i.ibb.co/3gGMyVH/eyes-closed.jpg";
-const DEFAULT_VISUAL = "https://i.ibb.co/WWHh1m2V/hay.jpg";
+const DEFAULT_VISUAL = "/sweety.jpg";
 const BACKGROUND_THEME_URL = "https://assets.mixkit.co/music/preview/mixkit-beautiful-dream-493.mp3";
 
 const MOOD_MUSIC: Record<string, string> = {
@@ -165,6 +170,235 @@ export default function App() {
   const [currentTheme, setCurrentTheme] = useState<keyof typeof THEMES>('purple');
   const theme = THEMES[currentTheme];
 
+  const [transcription, setTranscription] = useState<{user: string, mahi: string}>({user: '', mahi: ''});
+  const [gameMode, setGameMode] = useState<GameType>('none');
+  const [showCommandCenter, setShowCommandCenter] = useState(false);
+
+  // --- Firebase Integration State ---
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [recentMatches, setRecentMatches] = useState<any[]>([]);
+  const [recentMessages, setRecentMessages] = useState<any[]>([]);
+  const [showStatsPanel, setShowStatsPanel] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  // PWA installation states
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+      setIsInstallable(false);
+    }
+  };
+
+  const lastSavedRef = useRef<string>('');
+
+  // Validate Firestore Connection
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    }
+    testConnection();
+  }, []);
+
+  // Listen to Authentication State
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      setIsAuthLoading(false);
+      if (user) {
+        const userRef = doc(db, 'users', user.uid);
+        try {
+          const snap = await getDoc(userRef);
+          if (snap.exists()) {
+            const data = snap.data();
+            setUserProfile(data);
+            if (data.theme && THEMES[data.theme as keyof typeof THEMES]) {
+              setCurrentTheme(data.theme as any);
+            }
+          } else {
+            const initialProfile = {
+              uid: user.uid,
+              displayName: user.displayName || 'Krish',
+              email: user.email || '',
+              photoURL: user.photoURL || '',
+              theme: currentTheme,
+              ludoPlayed: 0,
+              ludoWon: 0,
+              updatedAt: serverTimestamp()
+            };
+            await setDoc(userRef, initialProfile);
+            setUserProfile(initialProfile);
+          }
+        } catch (err) {
+          console.error('Error fetching/creating user profile:', err);
+        }
+      } else {
+        setUserProfile(null);
+        setRecentMatches([]);
+        setRecentMessages([]);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  // Realtime matches listener
+  useEffect(() => {
+    if (!currentUser) return;
+    const matchesRef = collection(db, 'users', currentUser.uid, 'matches');
+    const q = query(matchesRef, orderBy('createdAt', 'desc'), limit(10));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setRecentMatches(list);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, `users/${currentUser.uid}/matches`);
+    });
+    return unsubscribe;
+  }, [currentUser]);
+
+  // Realtime messages (conversation logs) listener
+  useEffect(() => {
+    if (!currentUser) return;
+    const messagesRef = collection(db, 'users', currentUser.uid, 'messages');
+    const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(15));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setRecentMessages(list);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, `users/${currentUser.uid}/messages`);
+    });
+    return unsubscribe;
+  }, [currentUser]);
+
+  // Auto-save speech transcripts
+  useEffect(() => {
+    if (!currentUser || !transcription.user || !transcription.mahi) return;
+    const textCombo = `${transcription.user}|||${transcription.mahi}`;
+    if (lastSavedRef.current === textCombo) return;
+    lastSavedRef.current = textCombo;
+
+    const saveMessage = async () => {
+      try {
+        const messagesRef = collection(db, 'users', currentUser.uid, 'messages');
+        await addDoc(messagesRef, {
+          userId: currentUser.uid,
+          userText: transcription.user,
+          mahiText: transcription.mahi,
+          createdAt: serverTimestamp()
+        });
+      } catch (err) {
+        console.error('Error saving message log:', err);
+      }
+    };
+    const timer = setTimeout(saveMessage, 1000);
+    return () => clearTimeout(timer);
+  }, [transcription, currentUser]);
+
+  const handleGoogleSignIn = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (err) {
+      console.error('Sign-in error:', err);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error('Sign-out error:', err);
+    }
+  };
+
+  const handleThemeChange = async (id: keyof typeof THEMES) => {
+    setCurrentTheme(id);
+    if (currentUser) {
+      const userRef = doc(db, 'users', currentUser.uid);
+      try {
+        await updateDoc(userRef, {
+          theme: id,
+          updatedAt: serverTimestamp()
+        });
+        setUserProfile((prev: any) => prev ? { ...prev, theme: id } : null);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${currentUser.uid}`);
+      }
+    }
+  };
+
+  const handleGameStarted = async () => {
+    if (!currentUser) return;
+    const userRef = doc(db, 'users', currentUser.uid);
+    try {
+      await updateDoc(userRef, {
+        ludoPlayed: (userProfile?.ludoPlayed || 0) + 1,
+        updatedAt: serverTimestamp()
+      });
+      setUserProfile((prev: any) => prev ? { ...prev, ludoPlayed: (prev.ludoPlayed || 0) + 1 } : null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${currentUser.uid}`);
+    }
+  };
+
+  const handleGameFinished = async (winner: 'player' | 'mahi', finalPlayerPos: number, finalMahiPos: number) => {
+    if (!currentUser) return;
+    const userRef = doc(db, 'users', currentUser.uid);
+    const matchesRef = collection(db, 'users', currentUser.uid, 'matches');
+    try {
+      await addDoc(matchesRef, {
+        userId: currentUser.uid,
+        playerPos: finalPlayerPos,
+        mahiPos: finalMahiPos,
+        winner: winner,
+        createdAt: serverTimestamp()
+      });
+
+      const isWinner = winner === 'player';
+      const updatePayload: any = {
+        updatedAt: serverTimestamp()
+      };
+      if (isWinner) {
+        updatePayload.ludoWon = (userProfile?.ludoWon || 0) + 1;
+      }
+      await updateDoc(userRef, updatePayload);
+      setUserProfile((prev: any) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          ludoWon: isWinner ? (prev.ludoWon || 0) + 1 : (prev.ludoWon || 0)
+        };
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.uid}/matches`);
+    }
+  };
+
   const [micLevel, setMicLevel] = useState(0);
   const [outputLevel, setOutputLevel] = useState(0);
   const smoothedOutputLevelRef = useRef(0);
@@ -172,10 +406,8 @@ export default function App() {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [transcription, setTranscription] = useState<{user: string, mahi: string}>({user: '', mahi: ''});
   const [showDebug, setShowDebug] = useState(false);
   const [lastMessageTime, setLastMessageTime] = useState(0);
-  const [gameMode, setGameMode] = useState<GameType>('none');
 
   // Animation States
   const [animState, setAnimState] = useState('idle'); // idle, listening, speaking
@@ -644,7 +876,7 @@ export default function App() {
             setLastMessageTime(Date.now());
             if ((message as any).serverContent?.goAway) {
               console.log('Received GoAway signal. Closing connection gracefully.');
-              setError("Session limit reached. Click to restart Mahi!");
+              setError("Session limit reached. Click to restart sweety!");
               stopMahi();
               return;
             }
@@ -723,7 +955,7 @@ export default function App() {
                 const waitTime = 1500 * retryCountRef.current; 
                 
                 if (msg.includes("unavailable")) {
-                  setError(`Mahi thodi busy hai (Service Unavailable). Reconnecting... (${retryCountRef.current}/5)`);
+                  setError(`sweety thodi busy hai (Service Unavailable). Reconnecting... (${retryCountRef.current}/5)`);
                 } else {
                   setError(`Signal kam aa raha hai... reconnect kar rahi hoon (${retryCountRef.current}/5)`);
                 }
@@ -733,7 +965,7 @@ export default function App() {
                 }, waitTime);
                 return;
               }
-              setError(msg.includes("unavailable") ? "Mahi abhi rest kar rahi hai (Unavailable). Please refresh or wait a bit." : "Network ki problem hai, ek baar button daba kar phir se try karo?");
+              setError(msg.includes("unavailable") ? "sweety abhi rest kar rahi hai (Unavailable). Please refresh or wait a bit." : "Network ki problem hai, ek baar button daba kar phir se try karo?");
             } else if (msg.includes("quota") || msg.includes("limit")) {
               setError("Humne bohot baatein kar li aaj! Limit khatam ho gayi hai. Kal milte hain? (Quota Limit Reached)");
               stopMahi();
@@ -814,10 +1046,10 @@ export default function App() {
       } else if (msg.includes("unavailable") || msg.includes("network") || msg.includes("fetch")) {
         if (retryCountRef.current < 5) {
           retryCountRef.current++;
-          setError(`Mahi ko call lag raha hai... (${retryCountRef.current}/5)`);
+          setError(`sweety ko call lag raha hai... (${retryCountRef.current}/5)`);
           setTimeout(startMahi, 2000 * retryCountRef.current);
         } else {
-          setError("Mahi busy hai ya network issue hai. Please try again later.");
+          setError("sweety busy hai ya network issue hai. Please try again later.");
           stopMahi();
         }
       } else {
@@ -882,13 +1114,42 @@ export default function App() {
   };
 
   return (
-    <div className="fixed inset-0 bg-[#000000] flex flex-col items-center justify-center overflow-hidden font-sans text-white">
+    <div className="fixed inset-0 bg-[#030306] flex overflow-hidden font-sans text-white select-none">
+      
+      {/* Premium Ambient Background & Sci-fi Grids */}
+      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+        {/* Deep Core Radial Glow matching active Theme */}
+        <motion.div 
+          animate={{ 
+            opacity: [0.12, 0.22, 0.12], 
+            scale: [1, 1.08, 1],
+            rotate: [0, 45, 0]
+          }}
+          transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1000px] h-[1000px] blur-[140px] rounded-full"
+          style={{ background: `radial-gradient(circle, ${theme.bgGlow} 0%, rgba(0,0,0,0) 70%)` }}
+        />
+        
+        {/* Subtle Cybernetic Hex Grid / Alignment Matrix */}
+        <div 
+          className="absolute inset-0 opacity-[0.06] transition-all duration-700" 
+          style={{ 
+            backgroundImage: `linear-gradient(${theme.primary}15 1.5px, transparent 1.5px), linear-gradient(90deg, ${theme.primary}15 1.5px, transparent 1.5px)`, 
+            backgroundSize: '50px 50px' 
+          }} 
+        />
+        
+        {/* Floating micro starfield particles */}
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:32px_32px]" />
+      </div>
+
       {/* Debug View Toggle */}
       <button 
         onClick={() => setShowDebug(!showDebug)} 
-        className="fixed top-4 left-4 z-[100] opacity-20 hover:opacity-100 transition-opacity"
+        className="fixed bottom-6 left-6 z-[100] opacity-10 hover:opacity-100 transition-opacity p-2.5 bg-black/40 hover:bg-black/80 backdrop-blur-md rounded-xl border border-white/5"
+        title="Diagnostic Settings"
       >
-        <Settings size={16} />
+        <Settings size={15} className="text-gray-400" />
       </button>
 
       {/* Debug Info Overlay */}
@@ -899,74 +1160,657 @@ export default function App() {
             initial={{ opacity: 0, x: -100 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -100 }}
-            className="fixed top-12 left-4 z-[99] bg-black/80 backdrop-blur-xl p-4 rounded-xl border border-white/10 w-64 text-[10px] space-y-2 pointer-events-none"
+            className="fixed bottom-20 left-6 z-[99] bg-[#07070b]/95 backdrop-blur-2xl p-4.5 rounded-2xl border border-white/10 w-72 text-[10px] space-y-3 pointer-events-none shadow-2xl"
           >
-            <div className="text-gray-400 uppercase tracking-widest font-bold border-b border-white/10 pb-1">Debug Info</div>
-            <div><span className="text-indigo-400">Status:</span> {isActive ? 'Live' : 'Paused'}</div>
-            <div><span className="text-indigo-400">Mic Level:</span> <div className="inline-block w-20 h-1 bg-gray-700 rounded-full overflow-hidden"><div className="h-full bg-green-500" style={{ width: `${Math.min(100, micLevel * 500)}%` }}></div></div></div>
-            <div><span className="text-indigo-400">Retry Count:</span> {retryCountRef.current}</div>
-            <div><span className="text-indigo-400">User:</span> <span className="text-gray-300">{transcription.user || '...'}</span></div>
-            <div><span className="text-indigo-400">Mahi:</span> <span className="text-gray-300">{transcription.mahi || '...'}</span></div>
+            <div className="text-gray-400 uppercase tracking-widest font-black border-b border-white/5 pb-1.5 flex items-center gap-1.5">
+              <Activity size={12} className="text-indigo-400" />
+              Core Diagnostic Logs
+            </div>
+            <div className="space-y-1.5 font-mono text-gray-300">
+              <div><span className="text-indigo-400/80">CORE_SESSION:</span> {isActive ? 'ACTIVE_LIVE' : 'IDLE_STANDBY'}</div>
+              <div><span className="text-indigo-400/80">LATENCY_PULSE:</span> {lastMessageTime ? `${Date.now() - lastMessageTime}ms` : '0ms'}</div>
+              <div><span className="text-indigo-400/80">MIC_ENERGY:</span> <div className="inline-block w-24 h-1.5 bg-gray-800 rounded-full overflow-hidden ml-1.5"><div className="h-full bg-green-400" style={{ width: `${Math.min(100, micLevel * 600)}%` }}></div></div></div>
+              <div><span className="text-indigo-400/80">RETRY_INDEX:</span> {retryCountRef.current} / 5</div>
+              <div className="border-t border-white/5 pt-1.5 text-gray-400 font-bold uppercase tracking-wider text-[8px]">Live Capture Streams</div>
+              <div className="truncate"><span className="text-indigo-400/80">USER_RAW:</span> {transcription.user || 'Waiting...'}</div>
+              <div className="truncate"><span className="text-indigo-400/80">MAHI_RAW:</span> {transcription.mahi || 'Waiting...'}</div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
-      <div className="absolute inset-0 z-0 pointer-events-none">
-        <motion.div 
-          animate={{ opacity: [0.1, 0.2, 0.1] }}
-          transition={{ duration: 8, repeat: Infinity }}
-          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[900px] h-[900px] blur-[80px]"
-          style={{ background: `radial-gradient(circle, ${theme.bgGlow} 0%, rgba(0,0,0,0) 70%)` }}
-        />
-        <div className="absolute inset-0 opacity-40" style={{ backgroundImage: `linear-gradient(${theme.primary}05 1px,transparent_1px),linear-gradient(90deg,${theme.primary}05 1px,transparent_1px)`, backgroundSize: '100px 100px' }} />
-      </div>
-      
-      {/* Header HUD */}
-      <div className="absolute top-0 left-0 right-0 p-8 flex justify-between items-start z-50 pointer-events-none">
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-3">
-            <motion.div 
-              animate={isActive ? { scale: [1, 1.5, 1], opacity: [1, 0.7, 1] } : { opacity: 0.3 }}
-              transition={{ duration: 2, repeat: Infinity }}
-              className="w-2.5 h-2.5 rounded-full"
-              style={{ backgroundColor: theme.primary, boxShadow: `0 0 15px ${theme.primary}` }}
-            />
-            <h1 className="text-xl font-bold tracking-[6px] text-white uppercase opacity-90">MAHI</h1>
-          </div>
-          <div className="flex gap-4 text-[9px] uppercase tracking-[3px] font-mono" style={{ color: `${theme.primary}99` }}>
-            <span>CORE_OS_v3.2</span>
-            <span>|</span>
-            <span style={{ color: theme.secondary }}>{isActive ? (isListening ? 'Awaiting Audio' : 'Processing') : 'Locked'}</span>
-          </div>
-        </div>
 
-        {/* Theme Switcher */}
-        <div className="flex gap-2 pointer-events-auto">
-          {Object.entries(THEMES).map(([id, t]) => (
+      {/* LEFT SIDEBAR: COLLAPSIBLE FUTURE COMMAND COMMAND DECK */}
+      <AnimatePresence>
+        {(showCommandCenter || window.innerWidth >= 1024) && (
+          <motion.aside
+            initial={{ x: '-100%', opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: '-100%', opacity: 0 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 220 }}
+            className={`
+              fixed lg:static top-0 bottom-0 left-0 w-80 lg:w-[350px] shrink-0
+              bg-[#060609]/90 lg:bg-[#060609]/50 backdrop-blur-3xl border-r border-white/5 
+              z-[80] lg:z-20 p-6 flex flex-col gap-5 h-full overflow-y-auto select-none
+              ${showCommandCenter ? 'block shadow-2xl' : 'hidden lg:flex'}
+            `}
+          >
+            {/* Command Deck Header */}
+            <div className="flex items-center justify-between border-b border-white/5 pb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl flex items-center justify-center relative overflow-hidden" style={{ background: `linear-gradient(135deg, ${theme.primary}22, ${theme.secondary}11)`, border: `1px solid ${theme.primary}4D` }}>
+                  <Brain size={16} className="text-white animate-pulse" style={{ color: theme.primary }} />
+                </div>
+                <div>
+                  <h2 className="text-xs font-black uppercase tracking-[3px] text-white">SWEETY ENGINE</h2>
+                  <p className="text-[8px] font-mono uppercase tracking-wider text-gray-500">Autonomous Soul</p>
+                </div>
+              </div>
+              
+              {/* Close Button on Mobile Sidebar */}
+              <button 
+                onClick={() => setShowCommandCenter(false)}
+                className="lg:hidden p-1.5 hover:bg-white/5 rounded-lg text-gray-400 hover:text-white transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* WIDGET 1: NEURAL CORE & EXPRESSION ANALYZER */}
+            <div className="bg-white/2 border border-white/5 rounded-2xl p-4 flex flex-col gap-3.5 backdrop-blur-md relative overflow-hidden group hover:border-white/10 transition-all">
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] font-mono uppercase tracking-widest text-gray-400 flex items-center gap-1.5">
+                  <Activity size={10} style={{ color: theme.primary }} className="animate-pulse" />
+                  Telemetry Diagnostic
+                </span>
+                <span className="text-[8px] font-mono text-green-400 bg-green-500/10 border border-green-500/20 px-1.5 py-0.5 rounded uppercase">Dynamic</span>
+              </div>
+
+              {/* Emotional Bias Card */}
+              <div className="p-3 rounded-xl bg-black/40 border border-white/5 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="text-2xl">
+                    {expression === 'happy' && '😊'}
+                    {expression === 'sad' && '😢'}
+                    {expression === 'heartbroken' && '💔'}
+                    {expression === 'excited' && '🤩'}
+                    {expression === 'caring' && '🥰'}
+                    {expression === 'sassy' && '😏'}
+                    {expression === 'surprised' && '😲'}
+                    {expression === 'embarrassed' && '😳'}
+                    {expression === 'confused' && '😕'}
+                    {expression === 'thinking' && '🤔'}
+                    {!expression && '🌸'}
+                  </div>
+                  <div>
+                    <div className="text-[8px] font-mono uppercase text-gray-500">Active Expression</div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-white" style={{ color: theme.secondary }}>
+                      {expression || 'IDLE_STANDBY'}
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[8px] font-mono text-white/40 border border-white/10 rounded px-1.5 py-0.5 uppercase bg-white/2">
+                  Bias: {expression === 'heartbroken' || expression === 'sad' ? 'Fragile' : 'Empathetic'}
+                </span>
+              </div>
+
+              {/* Telemetry Micro Bars */}
+              <div className="space-y-2">
+                <div>
+                  <div className="flex justify-between text-[8px] font-mono text-gray-500 uppercase tracking-wider mb-1">
+                    <span>Voice Input Level</span>
+                    <span>{Math.round(micLevel * 100)}%</span>
+                  </div>
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                    <motion.div 
+                      className="h-full rounded-full transition-all duration-100" 
+                      style={{ 
+                        backgroundColor: theme.primary,
+                        width: `${Math.min(100, micLevel * 600)}%`,
+                        boxShadow: `0 0 8px ${theme.primary}`
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between text-[8px] font-mono text-gray-500 uppercase tracking-wider mb-1">
+                    <span>sweety Response Power</span>
+                    <span>{Math.round(outputLevel * 100)}%</span>
+                  </div>
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                    <motion.div 
+                      className="h-full rounded-full transition-all duration-100" 
+                      style={{ 
+                        backgroundColor: theme.secondary,
+                        width: `${Math.min(100, outputLevel * 100)}%`,
+                        boxShadow: `0 0 8px ${theme.secondary}`
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* WIDGET 2: CONVERSATION MEMORY FEEDBACK */}
+            <div className="flex-1 flex flex-col bg-white/2 border border-white/5 rounded-2xl p-4 backdrop-blur-md hover:border-white/10 transition-all min-h-[220px]">
+              <div className="flex items-center gap-1.5 text-[9px] font-mono uppercase text-gray-400 tracking-widest mb-3 border-b border-white/5 pb-2">
+                <MessageCircle size={11} style={{ color: theme.primary }} />
+                Realtime Speech Bubble
+              </div>
+
+              {/* Feed Area */}
+              <div className="flex-1 overflow-y-auto space-y-4 pr-1 scrollbar-thin">
+                {!transcription.user && !transcription.mahi ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center text-gray-500 gap-2.5 py-6">
+                    <motion.div
+                      animate={{ scale: [1, 1.1, 1], opacity: [0.3, 0.6, 0.3] }}
+                      transition={{ duration: 3, repeat: Infinity }}
+                    >
+                      <Sparkles size={22} className="text-gray-600" />
+                    </motion.div>
+                    <div className="text-[10px] font-mono uppercase tracking-wider">Awaiting Stream</div>
+                    <p className="text-[9px] leading-relaxed max-w-[180px] font-sans">Click the center sphere below and say "Hi sweety" to initiate voice link.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3.5">
+                    {transcription.user && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 5 }} 
+                        animate={{ opacity: 1, y: 0 }}
+                        className="space-y-1"
+                      >
+                        <div className="flex items-center gap-1.5 text-[8px] font-mono text-gray-500 uppercase">
+                          <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+                          You
+                        </div>
+                        <div className="text-[10.5px] leading-relaxed bg-[#0c0c14] border border-white/5 rounded-xl px-3 py-2 text-gray-200">
+                          {transcription.user}
+                        </div>
+                      </motion.div>
+                    )}
+
+                    {transcription.mahi && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 5 }} 
+                        animate={{ opacity: 1, y: 0 }}
+                        className="space-y-1"
+                      >
+                        <div className="flex items-center gap-1.5 text-[8px] font-mono uppercase text-pink-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-pink-400 shadow-[0_0_8px_rgba(244,114,182,0.8)] animate-ping" />
+                          sweety
+                        </div>
+                        <div className="text-[10.5px] leading-relaxed bg-gradient-to-r from-purple-950/15 to-pink-950/10 border border-purple-500/10 rounded-xl px-3 py-2 text-white shadow-sm">
+                          {transcription.mahi}
+                        </div>
+                      </motion.div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* WIDGET 3: LUDO INITIATOR BENTO CARD */}
+            <div className="p-3.5 rounded-2xl bg-gradient-to-br from-indigo-950/15 via-purple-950/10 to-transparent border border-indigo-500/10 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] font-mono uppercase tracking-wider text-indigo-300">Playful Core v2.0</span>
+                <span className="text-[8px] font-mono text-indigo-400 uppercase">Interactive</span>
+              </div>
+              <p className="text-[9px] text-gray-400 leading-normal">
+                Challenge sweety to an exciting game of Ludo to boost compatibility. Playful AI state is fully integrated.
+              </p>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <motion.button
+                  onClick={() => setGameMode('ludo')}
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-mono uppercase text-[9px] py-1.5 rounded-xl flex items-center justify-center gap-1.5 shadow-lg tracking-wider font-bold transition-colors"
+                >
+                  <Trophy size={11} />
+                  Play Ludo
+                </motion.button>
+                <motion.button
+                  onClick={() => setShowStatsPanel(true)}
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  className="bg-white/5 hover:bg-white/10 border border-white/10 text-white font-mono uppercase text-[9px] py-1.5 rounded-xl flex items-center justify-center gap-1.5 tracking-wider transition-colors"
+                >
+                  <History size={11} />
+                  Memory Log
+                </motion.button>
+              </div>
+            </div>
+          </motion.aside>
+        )}
+      </AnimatePresence>
+
+      {/* RIGHT/MAIN PANELS CONTAINER */}
+      <div className="flex-1 flex flex-col relative h-full z-10">
+
+        {/* TOP HUD ROW */}
+        <header className="p-6 md:p-8 flex justify-between items-center z-50 select-none pointer-events-none">
+          {/* Logo & Operational Status */}
+          <div className="flex items-center gap-4 pointer-events-auto">
+            {/* Sidebar trigger button on mobile/tablet */}
             <motion.button
-              key={id}
-              onClick={() => setCurrentTheme(id as any)}
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
-              className={`w-6 h-6 rounded-full border-2 transition-all ${currentTheme === id ? 'border-white scale-110 shadow-lg' : 'border-transparent'}`}
-              style={{ backgroundColor: t.primary }}
-              title={t.name}
-            />
-          ))}
-        </div>
-        
-        <div className="bg-white/5 border border-white/10 backdrop-blur-md px-4 py-2 rounded-xl flex items-center gap-4">
-          <div className="text-right">
-            <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: `${theme.secondary}CC` }}>कृष's Virtual</div>
-            <div className="text-[9px] font-mono uppercase" style={{ color: theme.primary }}>System Active</div>
+              onClick={() => setShowCommandCenter(!showCommandCenter)}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="lg:hidden p-2.5 bg-white/5 border border-white/10 backdrop-blur-md rounded-xl text-white flex items-center justify-center shadow-lg relative"
+              title="Toggle Command Deck"
+            >
+              <Brain size={16} style={{ color: theme.primary }} />
+              {!showCommandCenter && (
+                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-pink-500 shadow-[0_0_8px_#f472b6] animate-ping" />
+              )}
+            </motion.button>
+
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2.5">
+                <motion.div 
+                  animate={isActive ? { scale: [1, 1.4, 1], opacity: [1, 0.6, 1] } : { opacity: 0.3 }}
+                  transition={{ duration: 2, repeat: Infinity }}
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: theme.primary, boxShadow: `0 0 12px ${theme.primary}` }}
+                />
+                <h1 className="text-md font-black tracking-[4px] text-white uppercase opacity-95">SWEETY</h1>
+              </div>
+              <div className="flex gap-2.5 text-[8px] uppercase tracking-[1.5px] font-mono text-gray-500">
+                <span>SYSTEM_V3.5</span>
+                <span>|</span>
+                <span style={{ color: theme.secondary }} className="font-bold">
+                  {isActive ? (isListening ? 'SYNC_AWAITING' : 'NEURAL_PROCESSING') : 'STANDBY_LOCKED'}
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="w-px h-8 bg-white/10" />
-          <div className="text-xs font-mono" style={{ color: theme.secondary }}>
-            {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+
+          {/* Theme & User Controller Deck */}
+          <div className="flex items-center gap-3.5 pointer-events-auto">
+            {/* Theme Picker Circles */}
+            <div className="hidden sm:flex gap-1.5 bg-black/30 border border-white/5 px-2.5 py-1.5 rounded-full backdrop-blur-md">
+              {Object.entries(THEMES).map(([id, t]) => (
+                <motion.button
+                  key={id}
+                  onClick={() => handleThemeChange(id as any)}
+                  whileHover={{ scale: 1.15 }}
+                  whileTap={{ scale: 0.9 }}
+                  className={`w-4 h-4 rounded-full border-2 transition-all duration-300 ${currentTheme === id ? 'border-white scale-110 shadow-[0_0_10px_rgba(255,255,255,0.4)]' : 'border-transparent opacity-60 hover:opacity-100'}`}
+                  style={{ backgroundColor: t.primary }}
+                  title={t.name}
+                />
+              ))}
+            </div>
+
+            {/* Authentication and Dashboard Button */}
+            {isAuthLoading ? (
+              <div className="w-8 h-8 rounded-full border-2 border-t-transparent border-white/20 animate-spin" />
+            ) : currentUser ? (
+              <div className="flex items-center gap-2.5 bg-[#0b0b11]/80 border border-white/10 backdrop-blur-xl px-2.5 py-1.5 rounded-2xl shadow-xl">
+                <motion.button
+                  onClick={() => setShowStatsPanel(true)}
+                  whileHover={{ scale: 1.03 }}
+                  className="flex items-center gap-2"
+                  title="Companion Records Database"
+                >
+                  <img 
+                    src={currentUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${currentUser.uid}`} 
+                    alt={currentUser.displayName || 'User'} 
+                    className="w-6 h-6 rounded-xl border border-white/10 object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="text-left hidden md:block">
+                    <div className="text-[8px] font-mono uppercase tracking-widest text-white/90">{currentUser.displayName?.split(' ')[0]}</div>
+                    <div className="text-[7px] font-mono text-emerald-400">Sync Active</div>
+                  </div>
+                </motion.button>
+                <div className="w-px h-4 bg-white/10" />
+                <motion.button
+                  onClick={handleSignOut}
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
+                  className="text-gray-400 hover:text-red-400 transition-colors"
+                  title="Terminate Connection"
+                >
+                  <LogOut size={13} />
+                </motion.button>
+              </div>
+            ) : (
+              <motion.button
+                onClick={handleGoogleSignIn}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white px-3.5 py-1.5 rounded-2xl text-[9px] font-mono uppercase tracking-wider flex items-center gap-1.5 shadow-lg shadow-indigo-950/20"
+              >
+                <LogIn size={11} className="text-emerald-300 animate-pulse" />
+                Auth Link
+              </motion.button>
+            )}
+
+            {/* Realtime Digital Clock */}
+            <div className="bg-[#0b0b11]/80 border border-white/10 backdrop-blur-xl px-3 py-1.5 rounded-2xl text-[9px] font-mono text-gray-300 hidden md:flex items-center gap-1.5 shadow-lg">
+              <span className="w-1 h-1 rounded-full bg-emerald-400 animate-ping" />
+              {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </div>
           </div>
+        </header>
+
+        {/* HOLOGRAPHIC CENTRAL CHARACTER VIEWPORT */}
+        <main className="flex-1 flex items-center justify-center p-4 relative min-h-0 select-none pointer-events-none">
+          
+          {/* Holographic Frame HUD Decorations */}
+          <div className="absolute inset-x-12 top-2 bottom-20 border border-white/[0.02] rounded-[32px] pointer-events-none hidden md:block">
+            <div className="absolute top-4 left-4 text-[7px] font-mono text-white/20 tracking-widest uppercase">LOC_XY_Z00</div>
+            <div className="absolute top-4 right-4 text-[7px] font-mono text-white/20 tracking-widest uppercase">RADAR_SWEEP_OK</div>
+            <div className="absolute bottom-4 left-4 text-[7px] font-mono text-white/20 tracking-widest uppercase">CAM_LINK_STABLE</div>
+            <div className="absolute bottom-4 right-4 text-[7px] font-mono text-white/20 tracking-widest uppercase">MOD_GEN_LIVE_2.0</div>
+            <div className="absolute top-1/2 left-4 -translate-y-1/2 text-[7px] font-mono text-white/15 rotate-90 origin-left tracking-widest">SCANNING_CORE_SEQUENCE</div>
+            <div className="absolute top-1/2 right-4 -translate-y-1/2 text-[7px] font-mono text-white/15 -rotate-90 origin-right tracking-widest">AUTON_MATRIX_LOAD</div>
+          </div>
+
+          <div className="relative h-full max-h-[85vh] aspect-[4/5] md:aspect-[3/4] flex items-center justify-center">
+            {/* Holographic Scanner Rings behind Character */}
+            <div className="absolute inset-0 flex items-center justify-center z-0 pointer-events-none">
+              {/* Outer Rotating Compass Ring */}
+              <motion.div 
+                animate={{ rotate: 360 }}
+                transition={{ duration: 24, repeat: Infinity, ease: "linear" }}
+                className="w-[85%] h-[85%] max-w-[500px] max-h-[500px] border border-dashed rounded-full opacity-[0.12]"
+                style={{ borderColor: theme.primary }}
+              />
+              
+              {/* Inner Counter-Rotating Target Circle */}
+              <motion.div 
+                animate={{ rotate: -360 }}
+                transition={{ duration: 16, repeat: Infinity, ease: "linear" }}
+                className="w-[68%] h-[68%] max-w-[380px] max-h-[380px] border border-dotted rounded-full opacity-[0.2]"
+                style={{ borderColor: theme.secondary }}
+              />
+
+              {/* Central Energy Core Pulse */}
+              <motion.div 
+                animate={{ scale: [0.95, 1.05, 0.95], opacity: [0.15, 0.35, 0.15] }}
+                transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+                className="w-[50%] h-[50%] rounded-full blur-[80px]"
+                style={{ backgroundColor: theme.bgGlow }}
+              />
+            </div>
+
+            {/* Main Character Render with emoting layout */}
+            <motion.div 
+              className="relative h-full w-full flex items-center justify-center z-10"
+              initial={{ opacity: 0 }}
+              animate={{ 
+                opacity: expression === 'heartbroken' ? 0.85 : 1,
+                x: expression === 'heartbroken' ? [0, -3, 3, -3, 3, 0] : 0,
+                y: expression === 'heartbroken' ? [0, 2, 0, 2, 0] : 0,
+                filter: expression === 'heartbroken' ? 'brightness(0.7) contrast(1.1)' : 'brightness(1) contrast(1)'
+              }}
+              transition={{
+                x: { duration: 0.3, repeat: expression === 'heartbroken' ? Infinity : 0 },
+                y: { duration: 0.2, repeat: expression === 'heartbroken' ? Infinity : 0 },
+                opacity: { duration: 0.5 },
+                filter: { duration: 0.5 }
+              }}
+            >
+              {/* Soft visual drop shadow glow in active theme color */}
+              <div className="absolute inset-x-0 top-1/4 bottom-1/4 blur-[130px] rounded-full opacity-45" style={{ backgroundColor: theme.bgGlow }} />
+
+              {/* Base Image (Mahi Visual) */}
+              <motion.img 
+                key={currentVisual}
+                src={currentVisual || DEFAULT_VISUAL} 
+                onError={() => setCurrentVisual(DEFAULT_VISUAL)}
+                initial={{ opacity: 0, scale: 0.97 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.65, ease: "easeOut" }}
+                alt="Mahi Visual" 
+                className="h-full w-auto object-contain relative z-10 transition-transform duration-300"
+                style={{ filter: `drop-shadow(0 0 25px ${theme.glow})` }}
+                referrerPolicy="no-referrer"
+              />
+
+              {/* Mouth Open Overlay (Lip Sync to live audio) */}
+              <motion.img 
+                src={ANIME_GIRL_MOUTH_OPEN}
+                alt="Mahi Mouth Sync"
+                animate={{ 
+                  opacity: (isSpeaking && isLipSyncEnabled) ? Math.min(1, outputLevel * 8) : 0,
+                }}
+                className="absolute inset-0 h-full w-auto object-contain z-20 pointer-events-none transition-opacity"
+                referrerPolicy="no-referrer"
+              />
+
+              {/* Eyes Closed/Blink Overlay */}
+              <motion.img 
+                src={ANIME_GIRL_EYES_CLOSED}
+                alt="Mahi Eye Blink"
+                animate={{ 
+                  opacity: (isBlinking || expression === 'sad' || expression === 'heartbroken') ? 1 : 0
+                }}
+                transition={{ duration: (expression === 'sad' || expression === 'heartbroken') ? 0.4 : 0.05 }}
+                className="absolute inset-0 h-full w-auto object-contain z-30 pointer-events-none transition-opacity"
+                referrerPolicy="no-referrer"
+              />
+
+              {/* Emotional Visual Spark Overlay Effects */}
+              <AnimatePresence>
+                {expression === 'thinking' && (
+                  <Fragment key="exp-thinking">
+                    <motion.div 
+                      initial={{ opacity: 0 }} 
+                      animate={{ opacity: 0.35 }} 
+                      exit={{ opacity: 0 }} 
+                      className="absolute top-1/4 left-1/4 w-[50%] h-[50%] bg-indigo-500/20 blur-[90px] rounded-full z-0 p-4"
+                    >
+                      <motion.div 
+                        animate={{ rotate: 360 }}
+                        transition={{ duration: 4.5, repeat: Infinity, ease: "linear" }}
+                        className="w-full h-full border border-dashed border-indigo-400/40 rounded-full"
+                      />
+                    </motion.div>
+                  </Fragment>
+                )}
+                {expression === 'happy' && (
+                  <Fragment key="exp-happy">
+                    <motion.div key="happy-blush-l" initial={{ opacity: 0 }} animate={{ opacity: 0.25 }} exit={{ opacity: 0 }} className="absolute top-[52%] left-[30%] w-[12%] h-[6%] bg-red-400/25 blur-[18px] rounded-full z-40" />
+                    <motion.div key="happy-blush-r" initial={{ opacity: 0 }} animate={{ opacity: 0.25 }} exit={{ opacity: 0 }} className="absolute top-[52%] left-[58%] w-[12%] h-[6%] bg-red-400/25 blur-[18px] rounded-full z-40" />
+                  </Fragment>
+                )}
+                {(expression === 'sad' || expression === 'heartbroken') && (
+                  <Fragment key="exp-sad-hb">
+                    <motion.div 
+                      key="sad-bg"
+                      initial={{ opacity: 0 }} 
+                      animate={{ opacity: [0.25, expression === 'heartbroken' ? 0.75 : 0.45, 0.25] }} 
+                      transition={{ duration: 1.5, repeat: Infinity }}
+                      className={`absolute inset-0 ${expression === 'heartbroken' ? 'bg-indigo-950/50' : 'bg-blue-500/15'} blur-[140px] z-5`} 
+                    />
+                  </Fragment>
+                )}
+                {expression === 'excited' && (
+                  <motion.div 
+                    key="exp-excited"
+                    initial={{ opacity: 0 }} 
+                    animate={{ scale: [1, 1.15, 1], opacity: 0.2 }} 
+                    className="absolute inset-0 bg-yellow-400/15 blur-[90px] z-5" 
+                  />
+                )}
+                {expression === 'embarrassed' && (
+                  <Fragment key="exp-embarrassed">
+                    <motion.div key="emb-blush-l" initial={{ opacity: 0 }} animate={{ opacity: 0.45 }} exit={{ opacity: 0 }} className="absolute top-[52%] left-[32%] w-[10%] h-[5%] bg-red-600/25 blur-[20px] rounded-full z-40" />
+                    <motion.div key="emb-blush-r" initial={{ opacity: 0 }} animate={{ opacity: 0.45 }} exit={{ opacity: 0 }} className="absolute top-[52%] left-[58%] w-[10%] h-[5%] bg-red-600/25 blur-[20px] rounded-full z-40" />
+                  </Fragment>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          </div>
+        </main>
+
+        {/* FLOATING GLASS PILOT CONSOLE (BOTTOM CONTROLLER) */}
+        <div className="bottom-0 left-0 right-0 p-6 md:p-8 flex flex-col items-center justify-end z-40 select-none pointer-events-none mt-auto">
+          
+          {/* Dual-sided, Real-time Equalizer Waveform Indicator */}
+          <div className="flex items-center justify-center gap-1.5 h-[50px] mb-6 pointer-events-none">
+            <AnimatePresence>
+              {isSpeaking ? (
+                [...Array(14)].map((_, i) => (
+                  <motion.div
+                    key={`speaking-wave-${i}`}
+                    initial={{ height: 4 }}
+                    animate={{ 
+                      height: [
+                        Math.random() * 25 + 10, 
+                        Math.random() * 50 + 20, 
+                        Math.random() * 18 + 5
+                      ],
+                      opacity: [0.4, 0.9, 0.5]
+                    }}
+                    transition={{ duration: 0.35, repeat: Infinity, ease: "easeInOut", delay: i * 0.02 }}
+                    className="w-1 rounded-full transition-all duration-300"
+                    style={{ 
+                      backgroundColor: i % 2 === 0 ? theme.primary : theme.secondary,
+                      boxShadow: `0 0 12px ${theme.primary}`
+                    }}
+                  />
+                ))
+              ) : isListening ? (
+                [...Array(10)].map((_, i) => (
+                  <motion.div
+                    key={`listening-wave-${i}`}
+                    animate={{ 
+                      height: Math.max(6, micLevel * 240 * (1 + Math.random())),
+                      opacity: [0.3, 0.6, 0.3]
+                    }}
+                    transition={{ duration: 0.1 }}
+                    className="w-1.5 rounded-full"
+                    style={{ 
+                      backgroundColor: theme.primary,
+                      boxShadow: `0 0 10px ${theme.primary}`
+                    }}
+                  />
+                ))
+              ) : (
+                <motion.div 
+                  key="wave-idle" 
+                  initial={{ opacity: 0 }} 
+                  animate={{ opacity: 0.25 }} 
+                  className="flex items-center gap-1.5 h-full"
+                >
+                  {[12, 25, 40, 20, 30, 20, 15, 10].map((h, i) => (
+                    <div key={`wave-idle-${i}`} className="w-1 h-2 rounded-full transition-all duration-500" style={{ height: `${h * 0.35}px`, backgroundColor: theme.primary }} />
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Integrated Floating glass cockpit controller panel */}
+          <div className="w-full max-w-xl bg-[#09090f]/80 border border-white/10 backdrop-blur-3xl rounded-3xl p-4.5 flex items-center justify-between shadow-2xl pointer-events-auto gap-4">
+            
+            {/* Visual Upload Trigger with camera/plus icon */}
+            <div className="flex items-center gap-2">
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleImageUpload}
+                accept="image/*"
+                className="hidden"
+              />
+              <motion.button
+                onClick={() => fileInputRef.current?.click()}
+                whileHover={{ scale: 1.08, backgroundColor: 'rgba(255,255,255,0.06)' }}
+                whileTap={{ scale: 0.95 }}
+                className="w-11 h-11 rounded-xl bg-white/2 border border-white/5 flex items-center justify-center cursor-pointer group text-gray-400 hover:text-white transition-all shadow"
+                title="Send Image Vision Asset to sweety"
+              >
+                <Plus size={18} className="transition-transform group-hover:rotate-90 duration-300" style={{ color: theme.secondary }} />
+              </motion.button>
+
+              {/* Screenshare Toggle */}
+              <motion.button
+                onClick={startScreenShare}
+                whileHover={{ scale: 1.08, backgroundColor: isScreenSharing ? `${theme.primary}22` : 'rgba(255,255,255,0.06)' }}
+                whileTap={{ scale: 0.95 }}
+                className={`w-11 h-11 rounded-xl border flex items-center justify-center cursor-pointer transition-all ${isScreenSharing ? 'bg-purple-500/15 border-purple-500/30' : 'bg-white/2 border-white/5 text-gray-400 hover:text-white'}`}
+                style={isScreenSharing ? { borderColor: theme.primary } : {}}
+                title={isScreenSharing ? "Disable screen share capture link" : "Share screenshare viewport with sweety"}
+              >
+                <Monitor size={17} style={{ color: isScreenSharing ? theme.primary : undefined }} />
+              </motion.button>
+            </div>
+
+            {/* Central Main Voice Link Sphere */}
+            <div className="relative">
+              <motion.button
+                onClick={toggleMahi}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className={`
+                  w-[74px] h-[74px] rounded-full border-2 
+                  bg-[#0a0a10] flex items-center justify-center cursor-pointer 
+                  shadow-[0_0_30px_rgba(0,0,0,0.4)] relative overflow-hidden
+                  transition-all duration-500
+                  ${isActive ? 'border-red-500/40 shadow-[0_0_25px_rgba(239,68,68,0.2)]' : 'border-white/10'}
+                `}
+                style={!isActive ? { borderColor: `${theme.primary}50` } : {}}
+              >
+                {/* Active pulsating core */}
+                <motion.div 
+                  animate={isActive ? { scale: [1, 1.25, 1], opacity: [1, 0.7, 1] } : {}}
+                  transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                  className="w-8 h-8 rounded-full shadow-lg transition-colors duration-500 flex items-center justify-center" 
+                  style={{ 
+                    backgroundColor: isActive ? '#EF4444' : theme.primary,
+                    boxShadow: `0 0 22px ${isActive ? '#EF4444' : theme.primary}`
+                  }}
+                >
+                  {isActive ? <MicOff size={13} className="text-white" /> : <Mic size={13} className="text-white" />}
+                </motion.div>
+              </motion.button>
+              
+              {isActive && (
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 0.5 }}
+                  className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-[7px] text-white/30 tracking-[1.5px] uppercase whitespace-nowrap font-mono"
+                >
+                  Interrupt Link
+                </motion.div>
+              )}
+            </div>
+
+            {/* Interactive Auxiliary Actions */}
+            <div className="flex items-center gap-2">
+              {/* Launcher for Ludo directly */}
+              <motion.button
+                onClick={() => setGameMode('ludo')}
+                whileHover={{ scale: 1.08, backgroundColor: 'rgba(255,255,255,0.06)' }}
+                whileTap={{ scale: 0.95 }}
+                className="w-11 h-11 rounded-xl bg-white/2 border border-white/5 flex items-center justify-center cursor-pointer text-gray-400 hover:text-white transition-all shadow"
+                title="Initiate interactive Mini-game"
+              >
+                <Trophy size={16} className="text-yellow-400/80" />
+              </motion.button>
+
+              {/* View Memory Log */}
+              <motion.button
+                onClick={() => setShowStatsPanel(true)}
+                whileHover={{ scale: 1.08, backgroundColor: 'rgba(255,255,255,0.06)' }}
+                whileTap={{ scale: 0.95 }}
+                className="w-11 h-11 rounded-xl bg-white/2 border border-white/5 flex items-center justify-center cursor-pointer text-gray-400 hover:text-white transition-all shadow"
+                title="Open records memory files ledger"
+              >
+                <History size={16} style={{ color: theme.primary }} />
+              </motion.button>
+            </div>
+
+          </div>
+
         </div>
+
       </div>
 
-      {/* MiniGames Overlay */}
+      {/* MiniGames Overlay Backdrop / Card Container */}
       <MiniGames 
         gameType={gameMode} 
         onClose={() => setGameMode('none')} 
@@ -978,320 +1822,11 @@ export default function App() {
             });
           }
         }}
+        onGameStarted={handleGameStarted}
+        onGameFinished={handleGameFinished}
       />
 
-      {/* Main Visual Container */}
-      <div className="absolute inset-0 flex justify-center items-center z-10 pointer-events-none">
-          {/* Character Container - Static for higher quality focus */}
-          <motion.div 
-            className="relative h-full flex items-center justify-center"
-            initial={{ opacity: 0 }}
-            animate={{ 
-              opacity: expression === 'heartbroken' ? 0.85 : 1,
-              x: expression === 'heartbroken' ? [0, -4, 4, -4, 4, 0] : 0,
-              y: expression === 'heartbroken' ? [0, 3, 0, 3, 0] : 0,
-              filter: expression === 'heartbroken' ? 'brightness(0.7) contrast(1.1)' : 'brightness(1) contrast(1)'
-            }}
-            transition={{
-              x: { duration: 0.3, repeat: expression === 'heartbroken' ? Infinity : 0 },
-              y: { duration: 0.2, repeat: expression === 'heartbroken' ? Infinity : 0 },
-              opacity: { duration: 0.5 },
-              filter: { duration: 0.5 }
-            }}
-          >
-            {/* Soft Ambient Glow */}
-            <div className="absolute inset-x-0 top-1/4 bottom-1/4 blur-[120px] rounded-full z-0" style={{ backgroundColor: theme.bgGlow }} />
-
-            {/* Base Image (Mahi Visual) */}
-            <motion.img 
-              key={currentVisual}
-              src={currentVisual || DEFAULT_VISUAL} 
-              onError={() => setCurrentVisual(DEFAULT_VISUAL)}
-              initial={{ opacity: 0, scale: 0.98 }}
-              animate={{ 
-                opacity: 1,
-                scale: 1
-              }}
-              transition={{ 
-                duration: 0.6,
-                ease: "easeOut"
-              }}
-              alt="Mahi Visual" 
-              className="h-full w-auto object-contain relative z-10"
-              style={{ filter: `drop-shadow(0 0 15px ${theme.glow})` }}
-              referrerPolicy="no-referrer"
-            />
-
-            {/* Mouth Open Overlay (Responsive to audio) */}
-            <motion.img 
-              src={ANIME_GIRL_MOUTH_OPEN}
-              alt="Mahi Talking"
-              animate={{ 
-                opacity: (isSpeaking && isLipSyncEnabled) ? Math.min(1, outputLevel * 8) : 0,
-              }}
-              className="absolute inset-0 h-full w-auto object-contain z-20 pointer-events-none"
-              referrerPolicy="no-referrer"
-            />
-
-            {/* Eyes Closed/Blink Overlay - Also used for Sad/Sobbing effect */}
-            <motion.img 
-              src={ANIME_GIRL_EYES_CLOSED}
-              alt="Mahi Blink"
-              animate={{ 
-                opacity: (isBlinking || expression === 'sad' || expression === 'heartbroken') ? 1 : 0
-              }}
-              transition={{ duration: (expression === 'sad' || expression === 'heartbroken') ? 0.4 : 0.05 }}
-              className="absolute inset-0 h-full w-auto object-contain z-30 pointer-events-none"
-              referrerPolicy="no-referrer"
-            />
-
-            {/* Expression Overlays (Subtle Glows) */}
-            <AnimatePresence>
-              {expression === 'thinking' && (
-                <Fragment key="exp-thinking">
-                  <motion.div 
-                    initial={{ opacity: 0 }} 
-                    animate={{ opacity: 0.3 }} 
-                    exit={{ opacity: 0 }} 
-                    className="absolute top-1/4 left-1/4 w-[50%] h-[50%] bg-indigo-500/20 blur-[80px] rounded-full z-0 p-4"
-                  >
-                    <motion.div 
-                      key="thinking-spin"
-                      animate={{ rotate: 360 }}
-                      transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
-                      className="w-full h-full border-2 border-dashed border-indigo-400/30 rounded-full"
-                    />
-                  </motion.div>
-                  <motion.div 
-                    key="thinking-aura"
-                    initial={{ opacity: 0 }} 
-                    animate={{ opacity: [0.05, 0.15, 0.05] }} 
-                    transition={{ duration: 3, repeat: Infinity }}
-                    className="absolute inset-0 bg-white/10 blur-[120px] z-5" 
-                  />
-                </Fragment>
-              )}
-              {expression === 'happy' && (
-                <Fragment key="exp-happy">
-                  <motion.div key="happy-blush-l" initial={{ opacity: 0 }} animate={{ opacity: 0.2 }} exit={{ opacity: 0 }} className="absolute top-[52%] left-[30%] w-[12%] h-[6%] bg-red-400/20 blur-[20px] rounded-full z-40" />
-                  <motion.div key="happy-blush-r" initial={{ opacity: 0 }} animate={{ opacity: 0.2 }} exit={{ opacity: 0 }} className="absolute top-[52%] left-[58%] w-[12%] h-[6%] bg-red-400/20 blur-[20px] rounded-full z-40" />
-                </Fragment>
-              )}
-              {(expression === 'sad' || expression === 'heartbroken') && (
-                <Fragment key="exp-sad-hb">
-                  <motion.div 
-                    key="sad-bg"
-                    initial={{ opacity: 0 }} 
-                    animate={{ opacity: [0.2, expression === 'heartbroken' ? 0.8 : 0.4, 0.2] }} 
-                    transition={{ duration: 1.2, repeat: Infinity }}
-                    className={`absolute inset-0 ${expression === 'heartbroken' ? 'bg-indigo-950/60' : 'bg-blue-500/20'} blur-[120px] z-5`} 
-                  />
-                  {expression === 'heartbroken' && (
-                    <div key="hb-vignette" className="absolute inset-0 z-50 pointer-events-none overflow-hidden">
-                      <div className="absolute inset-0 bg-radial-gradient from-transparent via-indigo-900/10 to-indigo-950/40" />
-                    </div>
-                  )}
-                </Fragment>
-              )}
-              {expression === 'excited' && (
-                <motion.div 
-                  key="exp-excited"
-                  initial={{ opacity: 0 }} 
-                  animate={{ scale: [1, 1.1, 1], opacity: 0.15 }} 
-                  className="absolute inset-0 bg-yellow-400/10 blur-[80px] z-5" 
-                />
-              )}
-              {expression === 'embarrassed' && (
-                <Fragment key="exp-embarrassed">
-                  <motion.div key="emb-blush-l" initial={{ opacity: 0 }} animate={{ opacity: 0.5 }} exit={{ opacity: 0 }} className="absolute top-[52%] left-[32%] w-[10%] h-[5%] bg-red-600/30 blur-[25px] rounded-full z-40" />
-                  <motion.div key="emb-blush-r" initial={{ opacity: 0 }} animate={{ opacity: 0.5 }} exit={{ opacity: 0 }} className="absolute top-[52%] left-[58%] w-[10%] h-[5%] bg-red-600/30 blur-[25px] rounded-full z-40" />
-                </Fragment>
-              )}
-              {expression === 'surprised' && (
-                <motion.div 
-                  key="exp-surprised"
-                  initial={{ opacity: 0, scale: 0.8 }} 
-                  animate={{ opacity: 0.1, scale: 1.5 }} 
-                  exit={{ opacity: 0 }}
-                  className="absolute inset-0 bg-white/20 blur-[100px] z-5" 
-                />
-              )}
-              {expression === 'confused' && (
-                <motion.div 
-                  key="exp-confused"
-                  initial={{ opacity: 0 }} 
-                  animate={{ opacity: [0.1, 0.2, 0.1] }} 
-                  transition={{ duration: 2, repeat: Infinity }}
-                  className="absolute inset-0 bg-indigo-500/10 blur-[100px] z-5" 
-                />
-              )}
-            </AnimatePresence>
-          </motion.div>
-      </div>
-
-      {/* Bottom HUD */}
-      <div className="absolute bottom-0 left-0 right-0 h-60 bg-gradient-to-t from-black via-black/80 to-transparent flex flex-col items-center justify-end pb-12 z-40">
-        
-        {/* Waveform Visualization */}
-        <div className="flex items-center gap-1.5 h-[60px] mb-8">
-          <AnimatePresence>
-            {isSpeaking ? (
-              [...Array(12)].map((_, i) => (
-                <motion.div
-                  key={`speaking-${i}`}
-                  initial={{ height: 4 }}
-                  animate={{ 
-                    height: [
-                      Math.random() * 20 + 10, 
-                      Math.random() * 40 + 20, 
-                      Math.random() * 15 + 5
-                    ],
-                    opacity: [0.3, 0.8, 0.5]
-                  }}
-                  transition={{ duration: 0.4, repeat: Infinity, ease: "easeInOut", delay: i * 0.03 }}
-                  className={`w-1 rounded-full ${i % 3 === 0 ? 'opacity-80' : 'opacity-50'}`}
-                  style={{ 
-                    backgroundColor: i % 3 === 0 ? theme.secondary : theme.primary,
-                    boxShadow: i % 3 === 0 ? `0 0 10px ${theme.primary}` : 'none'
-                  }}
-                />
-              ))
-            ) : isListening ? (
-              [...Array(8)].map((_, i) => (
-                <motion.div
-                  key={`listening-${i}`}
-                  animate={{ 
-                    height: Math.max(4, micLevel * 200 * (1 + Math.random())),
-                    opacity: [0.2, 0.4, 0.2]
-                  }}
-                  transition={{ duration: 0.1 }}
-                  className="w-1 rounded-full"
-                  style={{ backgroundColor: theme.primary }}
-                />
-              ))
-            ) : (
-              <motion.div 
-                key="visualizer-static" 
-                initial={{ opacity: 0 }} 
-                animate={{ opacity: 0.2 }} 
-                exit={{ opacity: 0 }}
-                className="flex items-center gap-1.5 h-full"
-              >
-                {[20, 40, 55, 35, 50, 35, 25, 20].map((h, i) => (
-                  <div key={`static-${i}`} className="w-1 rounded-full" style={{ height: `${h * 0.4}px`, backgroundColor: theme.primary }} />
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Controls Container */}
-        <div className="flex items-center gap-6 relative z-50">
-          {/* Upload Image Button */}
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleImageUpload}
-            accept="image/*"
-            className="hidden"
-          />
-          <motion.button
-            onClick={() => fileInputRef.current?.click()}
-            whileHover={{ scale: 1.1, backgroundColor: `${theme.primary}33` }}
-            whileTap={{ scale: 0.95 }}
-            className={`w-14 h-14 rounded-2xl border ${theme.border} flex items-center justify-center cursor-pointer bg-black/60 shadow-[0_4px_20px_rgba(0,0,0,0.5)] backdrop-blur-lg transition-all duration-300 group`}
-            title="Upload Image"
-          >
-            <svg 
-              xmlns="http://www.w3.org/2000/svg" 
-              width="24" height="24" 
-              viewBox="0 0 24 24" 
-              fill="none" 
-              stroke={theme.primary} 
-              strokeWidth="2" 
-              strokeLinecap="round" 
-              strokeLinejoin="round"
-              className="group-hover:opacity-80 transition-opacity"
-            >
-              <line x1="12" y1="5" x2="12" y2="19"/>
-              <line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-          </motion.button>
-
-          {/* Share Screen Button */}
-          <motion.button
-            onClick={startScreenShare}
-            whileHover={{ scale: 1.1, backgroundColor: isScreenSharing ? `${theme.primary}4D` : `${theme.primary}33` }}
-            whileTap={{ scale: 0.95 }}
-            className={`
-              w-14 h-14 rounded-2xl border flex items-center justify-center cursor-pointer
-              bg-black/60 shadow-[0_4px_20px_rgba(0,0,0,0.5)] backdrop-blur-lg
-              transition-all duration-300 group
-              ${isScreenSharing ? 'shadow-[0_0_20px_rgba(0,0,0,0.2)]' : 'hover:border-white/40'}
-            `}
-            style={{ 
-              borderColor: isScreenSharing ? theme.secondary : `${theme.primary}4D`,
-              boxShadow: isScreenSharing ? `0 0 20px ${theme.glow}` : 'none'
-            }}
-            title={isScreenSharing ? "Sharing Screen" : "Share Screen"}
-          >
-            <svg 
-              xmlns="http://www.w3.org/2000/svg" 
-              width="22" height="22" 
-              viewBox="0 0 24 24" 
-              fill="none" 
-              stroke={isScreenSharing ? theme.secondary : theme.primary} 
-              strokeWidth="2" 
-              strokeLinecap="round" 
-              strokeLinejoin="round"
-              className="group-hover:opacity-80 transition-opacity"
-            >
-              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-              <line x1="8" y1="21" x2="16" y2="21"/>
-              <line x1="12" y1="17" x2="12" y2="21"/>
-            </svg>
-          </motion.button>
-
-          {/* Mic Button / Trigger */}
-          <div className="relative">
-            <motion.button
-              onClick={toggleMahi}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className={`
-                w-[86px] h-[86px] rounded-full border-2 
-                bg-white/5 flex items-center justify-center cursor-pointer 
-                shadow-[0_0_40px_rgba(0,0,0,0.3)] relative overflow-hidden
-                transition-colors duration-500
-                ${isActive ? 'border-red-500/50' : 'border-white/10'}
-              `}
-              style={!isActive ? { borderColor: `${theme.primary}66` } : {}}
-            >
-              <motion.div 
-                animate={isActive ? { scale: [1, 1.2, 1], opacity: [1, 0.8, 1] } : {}}
-                transition={{ duration: 2, repeat: Infinity }}
-                className="w-9 h-9 rounded-full shadow-lg transition-colors duration-500" 
-                style={{ 
-                  backgroundColor: isActive ? '#EF4444' : theme.primary,
-                  boxShadow: `0 0 25px ${isActive ? '#EF4444' : theme.primary}`
-                }}
-              />
-            </motion.button>
-            
-            {isActive && (
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] text-white/40 tracking-[2px] uppercase whitespace-nowrap"
-              >
-                Tap to Interrupt
-              </motion.div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Enhanced Status/Error Display */}
+      {/* Enhanced connection / Error Toast Panel */}
       <AnimatePresence>
         {error && (
           <motion.div 
@@ -1299,10 +1834,10 @@ export default function App() {
             initial={{ opacity: 0, y: -20, x: '-50%' }}
             animate={{ opacity: 1, y: 0, x: '-50%' }}
             exit={{ opacity: 0, y: -20, x: '-50%' }}
-            className="fixed top-24 left-1/2 z-[100] w-[90%] max-w-sm"
+            className="fixed top-24 left-1/2 z-[150] w-[90%] max-w-sm pointer-events-auto"
           >
-            <div className="bg-red-500/20 border border-red-500/40 backdrop-blur-xl p-4 rounded-2xl flex flex-col items-center gap-3 shadow-2xl overflow-hidden relative">
-              <div className="absolute top-0 left-0 w-full h-1 bg-red-500/30 overflow-hidden">
+            <div className="bg-red-950/90 border border-red-500/30 backdrop-blur-2xl p-4 rounded-2xl flex flex-col items-center gap-3 shadow-2xl overflow-hidden relative">
+              <div className="absolute top-0 left-0 w-full h-1 bg-red-500/20 overflow-hidden">
                 <motion.div 
                   className="h-full bg-red-500"
                   animate={{ x: ['-100%', '100%'] }}
@@ -1310,18 +1845,182 @@ export default function App() {
                 />
               </div>
               
-              <p className="text-white text-xs font-medium text-center leading-relaxed">
+              <p className="text-red-200 text-xs font-semibold text-center leading-relaxed">
                 {error}
               </p>
               
               <button 
                 onClick={() => { stopMahi(); setTimeout(startMahi, 300); }}
-                className="bg-white/10 hover:bg-white/20 px-6 py-2 rounded-xl text-[10px] font-bold uppercase tracking-[2px] transition-all active:scale-95 text-white"
+                className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 px-4.5 py-1.5 rounded-xl text-[9px] font-bold uppercase tracking-[2px] transition-all active:scale-95 text-white"
               >
-                Reset Connection
+                Recalibrate Connection
               </button>
             </div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* COMPANION MEMORY LOGS DRAWER (RIGHT SIDEBAR) */}
+      <AnimatePresence>
+        {showStatsPanel && currentUser && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowStatsPanel(false)}
+              className="fixed inset-0 bg-black/80 backdrop-blur-md z-[120] pointer-events-auto"
+            />
+
+            {/* Sidebar Drawer */}
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 26, stiffness: 210 }}
+              className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-[#07070b]/98 border-l border-white/10 p-6 overflow-y-auto z-[130] flex flex-col gap-5.5 shadow-2xl pointer-events-auto"
+            >
+              {/* Drawer Header */}
+              <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
+                    <Trophy className="text-indigo-400" size={17} />
+                  </div>
+                  <div>
+                    <h2 className="text-xs font-black uppercase tracking-[2px] text-white">sweety Memory Log</h2>
+                    <p className="text-[8px] text-gray-400 font-mono">Syncing partner since {currentUser.metadata.creationTime ? new Date(currentUser.metadata.creationTime).toLocaleDateString() : 'now'}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowStatsPanel(false)}
+                  className="p-1.5 hover:bg-white/5 rounded-lg text-gray-400 hover:text-white transition-colors"
+                >
+                  <X size={17} />
+                </button>
+              </div>
+
+              {/* Quick Stats Grid */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-white/3 border border-white/5 p-3 rounded-xl text-center">
+                  <div className="text-[8px] uppercase font-mono text-indigo-300">Ludo Played</div>
+                  <div className="text-lg font-black mt-1 text-white">{userProfile?.ludoPlayed || 0}</div>
+                </div>
+                <div className="bg-white/3 border border-white/5 p-3 rounded-xl text-center">
+                  <div className="text-[8px] uppercase font-mono text-emerald-300">Ludo Won</div>
+                  <div className="text-lg font-black mt-1 text-white">{userProfile?.ludoWon || 0}</div>
+                </div>
+                <div className="bg-white/3 border border-white/5 p-3 rounded-xl text-center">
+                  <div className="text-[8px] uppercase font-mono text-pink-300">Win Rate</div>
+                  <div className="text-lg font-black mt-1 text-white">
+                    {userProfile?.ludoPlayed ? Math.round((userProfile.ludoWon / userProfile.ludoPlayed) * 100) : 0}%
+                  </div>
+                </div>
+              </div>
+
+              {/* PWA App Installation CTA */}
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-purple-950/15 to-indigo-950/15 border border-purple-500/15 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles size={13} className="text-purple-400 shrink-0" />
+                  <span className="text-[9px] font-mono uppercase tracking-wider text-purple-200">Convert to Standalone App</span>
+                </div>
+                <p className="text-[9px] text-gray-400 leading-relaxed">
+                  Install sweety as a standalone app on your home screen or desktop for fullscreen, zero-latency fluid voice chats.
+                </p>
+                {isInstallable ? (
+                  <motion.button
+                    onClick={handleInstallApp}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    className="mt-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-mono uppercase text-[9px] py-2 rounded-xl flex items-center justify-center gap-1.5 shadow-lg tracking-widest transition-colors font-black"
+                  >
+                    Install sweety App
+                  </motion.button>
+                ) : (
+                  <div className="mt-1 border-t border-white/5 pt-2 text-[8px] text-gray-500 font-mono space-y-1">
+                    <div className="flex items-center gap-1">
+                      <span className="text-purple-400 font-bold">iOS/Safari:</span> Tap share icon 📤 then select <span className="text-white">"Add to Home Screen"</span>.
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-indigo-400 font-bold">Android/Chrome:</span> Tap browser menu (3 dots) then select <span className="text-white">"Install app"</span>.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Ludo Matches List */}
+              <div className="flex flex-col gap-2.5">
+                <div className="flex items-center gap-1 text-[9px] font-mono uppercase text-gray-400 tracking-wider">
+                  <History size={12} className="text-indigo-400" />
+                  Recent Matches Database
+                </div>
+                <div className="space-y-2 max-h-[150px] overflow-y-auto pr-1">
+                  {recentMatches.length === 0 ? (
+                    <div className="text-[9px] text-gray-500 italic py-3 text-center bg-white/2 rounded-lg">No matches played yet. Start a game with sweety!</div>
+                  ) : (
+                    recentMatches.map((match: any) => {
+                      const isPlayerWinner = match.winner === 'player';
+                      return (
+                        <div key={match.id} className="flex items-center justify-between p-2.5 rounded-lg bg-white/3 border border-white/5 text-[9.5px]">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-1.5 h-1.5 rounded-full ${isPlayerWinner ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-pink-400'}`} />
+                            <span className="text-gray-300">Score: {match.playerPos} - {match.mahiPos}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`uppercase font-black tracking-wider ${isPlayerWinner ? 'text-emerald-400' : 'text-pink-400'}`}>
+                              {isPlayerWinner ? 'Victory' : 'Defeat'}
+                            </span>
+                            <span className="text-gray-500 font-mono">
+                              {match.createdAt?.seconds ? new Date(match.createdAt.seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Speech Conversation Log */}
+              <div className="flex flex-col gap-2.5 flex-1 min-h-0">
+                <div className="flex items-center gap-1 text-[9px] font-mono uppercase text-gray-400 tracking-wider">
+                  <MessageSquare size={12} className="text-pink-400" />
+                  Voice Transcripts Ledger
+                </div>
+                <div className="flex-1 overflow-y-auto space-y-3 bg-white/2 rounded-xl border border-white/5 p-3 min-h-[200px]">
+                  {recentMessages.length === 0 ? (
+                    <div className="text-[9px] text-gray-500 italic py-6 text-center h-full flex flex-col items-center justify-center gap-2">
+                      <Sparkles size={16} className="text-gray-600 animate-pulse" />
+                      <span>No logs synced yet. Talk to sweety to save memories!</span>
+                    </div>
+                  ) : (
+                    recentMessages.map((msg: any) => (
+                      <div key={msg.id} className="space-y-1.5 border-b border-white/5 pb-2.5 last:border-0 last:pb-0">
+                        <div className="flex items-center justify-between text-[7px] font-mono text-gray-500">
+                          <span>Verified Memory</span>
+                          <span>
+                            {msg.createdAt?.seconds ? new Date(msg.createdAt.seconds * 1000).toLocaleDateString() : ''}
+                          </span>
+                        </div>
+                        <div className="text-[10px] leading-relaxed">
+                          <div className="text-indigo-300 font-medium">You: <span className="text-gray-300 font-normal">{msg.userText}</span></div>
+                          <div className="text-pink-300 font-medium mt-0.5">sweety: <span className="text-gray-300 font-normal">{msg.mahiText}</span></div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Warning/Harden Info */}
+              <div className="mt-auto p-2.5 bg-indigo-950/20 border border-indigo-500/10 rounded-xl flex items-start gap-2">
+                <Shield size={13} className="text-indigo-400 shrink-0 mt-0.5" />
+                <p className="text-[8.5px] text-gray-400 leading-normal">
+                  Companion Memory Logs are protected by Firebase Zero-Trust Attribute-Based security rules. Only you can view or write your companion records.
+                </p>
+              </div>
+            </motion.div>
+          </>
         )}
       </AnimatePresence>
     </div>

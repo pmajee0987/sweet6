@@ -8,6 +8,8 @@ interface MiniGamesProps {
   gameType: GameType;
   onClose: () => void;
   onGameEvent: (event: string, score: number) => void;
+  onGameStarted?: () => void;
+  onGameFinished?: (winner: 'player' | 'mahi', playerPos: number, mahiPos: number) => void;
   theme: {
     primary: string;
     secondary: string;
@@ -19,7 +21,7 @@ const BOARD_SIZE = 15; // Small linear board for quick play
 
 const DICE_ICONS = [Dice1, Dice1, Dice2, Dice3, Dice4, Dice5, Dice6];
 
-export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesProps) {
+export function MiniGames({ gameType, onClose, onGameEvent, onGameStarted, onGameFinished, theme }: MiniGamesProps) {
   // --- Ludo State ---
   const [playerPos, setPlayerPos] = useState(0);
   const [mahiPos, setMahiPos] = useState(0);
@@ -27,6 +29,13 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
   const [diceRoll, setDiceRoll] = useState(1);
   const [isRolling, setIsRolling] = useState(false);
   const [winner, setWinner] = useState<'player' | 'mahi' | null>(null);
+
+  // Trigger onGameStarted when a game session is active and at start line
+  useEffect(() => {
+    if (gameType === 'ludo' && playerPos === 0 && mahiPos === 0) {
+      onGameStarted?.();
+    }
+  }, [gameType, playerPos, mahiPos, onGameStarted]);
 
   const rollDice = () => {
     if (isRolling || winner || turn !== 'player') return;
@@ -57,6 +66,7 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
       if (next === BOARD_SIZE) {
         setWinner('player');
         onGameEvent('player_won', 100);
+        onGameFinished?.('player', next, mahiPos);
       } else {
         setTurn('mahi');
       }
@@ -67,6 +77,7 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
       if (next === BOARD_SIZE) {
         setWinner('mahi');
         onGameEvent('mahi_won', 0);
+        onGameFinished?.('mahi', playerPos, next);
       } else {
         setTurn('player');
       }
@@ -99,7 +110,7 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
         <div className="flex items-center justify-between p-6 border-b border-white/5">
           <div className="flex items-center gap-3">
             <Trophy className="text-yellow-400" />
-            <h2 className="text-lg font-bold tracking-tight uppercase">Mahi's Neon Ludo</h2>
+            <h2 className="text-lg font-bold tracking-tight uppercase">sweety's Neon Ludo</h2>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-white/5 rounded-full transition-colors">
             <X size={20} />
@@ -121,7 +132,7 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
             <motion.div 
               animate={{ x: `${(playerPos / BOARD_SIZE) * 90}%` }}
               transition={{ type: 'spring', stiffness: 100 }}
-              className="absolute z-20 top-2"
+              className="absolute z-20 top-2 left-4"
             >
               <div className="w-8 h-8 rounded-full bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.5)] flex items-center justify-center border border-white/20">
                 <User size={14} />
@@ -133,12 +144,12 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
             <motion.div 
               animate={{ x: `${(mahiPos / BOARD_SIZE) * 90}%` }}
               transition={{ type: 'spring', stiffness: 100 }}
-              className="absolute z-20 bottom-2"
+              className="absolute z-20 bottom-2 left-4"
             >
               <div className="w-8 h-8 rounded-full bg-pink-500 shadow-[0_0_15px_rgba(236,72,153,0.5)] flex items-center justify-center border border-white/20">
                 <Bot size={14} />
               </div>
-              <div className="text-[8px] uppercase font-bold text-center mt-1 text-pink-300">Mahi</div>
+              <div className="text-[8px] uppercase font-bold text-center mt-1 text-pink-300">sweety</div>
             </motion.div>
 
             {/* Finish Line Indicator */}
@@ -159,7 +170,7 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
                 >
                   <Trophy size={48} className="text-yellow-400" />
                   <h3 className="text-2xl font-black uppercase text-white">
-                    {winner === 'player' ? "You Won!" : "Mahi Won!"}
+                    {winner === 'player' ? "You Won!" : "sweety Won!"}
                   </h3>
                   <button 
                     onClick={() => { setPlayerPos(0); setMahiPos(0); setWinner(null); setTurn('player'); }}
@@ -191,12 +202,12 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
                      >
                        <DiceIcon size={40} className={turn === 'player' ? 'text-indigo-400' : 'text-gray-400'} />
                      </motion.div>
-                     <span className="text-[9px] uppercase font-black">{isRolling ? 'Rolling...' : turn === 'player' ? 'Tap To Roll' : "Mahi's Turn"}</span>
+                     <span className="text-[9px] uppercase font-black">{isRolling ? 'Rolling...' : turn === 'player' ? 'Tap To Roll' : "sweety's Turn"}</span>
                    </motion.button>
 
                    <div className={`flex flex-col items-center gap-2 transition-opacity ${turn === 'mahi' ? 'opacity-100' : 'opacity-30'}`}>
                       <Bot className="text-pink-400" />
-                      <span className="text-[10px] uppercase font-bold tracking-widest">Mahi</span>
+                      <span className="text-[10px] uppercase font-bold tracking-widest">sweety</span>
                    </div>
                 </div>
               )}
@@ -207,7 +218,7 @@ export function MiniGames({ gameType, onClose, onGameEvent, theme }: MiniGamesPr
         {/* Footer */}
         <div className="p-6 bg-white/5 text-center">
           <p className="text-[10px] text-gray-400 tracking-wider">
-            Ludo: A race to the end with Mahi!
+            Ludo: A race to the end with sweety!
           </p>
         </div>
       </div>

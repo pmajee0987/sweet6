@@ -1,0 +1,23 @@
+{
+  "short_name": "sweety",
+  "name": "sweety - Personal AI Companion",
+  "icons": [
+    {
+      "src": "/sweety.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    },
+    {
+      "src": "/sweety.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#09090d",
+  "theme_color": "#a855f7",
+  "display": "standalone",
+  "orientation": "portrait"
+}
