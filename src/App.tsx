@@ -212,6 +212,21 @@ export default function App() {
 
   const lastSavedRef = useRef<string>('');
 
+  // Request microphone permission immediately on entry
+  useEffect(() => {
+    const requestMicPermissionOnEntry = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Release the stream immediately since we only wanted to request/warm up permission
+        stream.getTracks().forEach(track => track.stop());
+        console.log("Microphone permission granted on startup.");
+      } catch (err) {
+        console.warn("Could not request microphone permission on startup:", err);
+      }
+    };
+    requestMicPermissionOnEntry();
+  }, []);
+
   // Validate Firestore Connection
   useEffect(() => {
     async function testConnection() {

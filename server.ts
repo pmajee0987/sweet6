@@ -9,8 +9,14 @@ import fs from 'fs';
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Robust detection of directory for both ESM (development) and CJS (bundled production)
+let currentDir = '';
+try {
+  currentDir = __dirname;
+} catch (e) {
+  currentDir = path.dirname(fileURLToPath(import.meta.url));
+}
+
 const isProd = process.env.NODE_ENV === 'production';
 
 async function createServer() {
@@ -73,7 +79,7 @@ async function createServer() {
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
       try {
-        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+        let template = fs.readFileSync(path.resolve(currentDir, 'index.html'), 'utf-8');
         template = await vite.transformIndexHtml(url, template);
         res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
       } catch (e) {
@@ -83,7 +89,7 @@ async function createServer() {
     });
   } else {
     // In production: serve static files
-    const distPath = path.join(__dirname, 'dist');
+    const distPath = currentDir.endsWith('dist') ? currentDir : path.join(currentDir, 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
